@@ -65,7 +65,9 @@ func (c *conn) DoContextWithTimeout(ctx context.Context, readTimeout time.Durati
 		// Do not leave a command deadline on a later legacy write with timeout=0.
 		if !deadline.IsZero() && c.Err() == nil {
 			if resetErr := c.conn.SetDeadline(time.Time{}); resetErr != nil {
-				reply, err = nil, c.fatal(resetErr)
+				// The command already has a complete reply. Retire the connection,
+				// but do not replace that known result with a cleanup error.
+				_ = c.fatal(resetErr)
 			}
 		}
 	}()

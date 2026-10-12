@@ -348,3 +348,43 @@ func TestLoggingWrapperForwardsOptionalInterface(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type resetFailureConn struct {
+	net.Conn
+	resetErr error
+}
+
+func (c *resetFailureConn) SetDeadline(t time.Time) error {
+	if t.IsZero() {
+		return c.resetErr
+	}
+	return c.Conn.SetDeadline(t)
+}
+
+func TestDeadlineCleanupPreservesCompletedReply(t *testing.T) {
+	for _, wire := range []string{"+PONG\r\n", "-WRONGTYPE test\r\n"} {
+		t.Run(wire[:len(wire)-2], func(t *testing.T) {
+			address, _ := startBudgetServer(t, func(c net.Conn, _ []string) { _, _ = io.WriteString(c, wire) })
+			nc, err := net.Dial("tcp", address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resetErr := errors.New("test deadline reset failure")
+			c := redigo.NewConn(&resetFailureConn{nc, resetErr}, time.Second, time.Second)
+			defer c.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			reply, err := redigo.DoContextWithTimeout(c, ctx, time.Second, "PING")
+			if wire[0] == '+' {
+				if err != nil || reply != "PONG" {
+					t.Fatalf("completed reply lost: %v %v", reply, err)
+				}
+			} else if !errors.Is(err, redigo.Error("WRONGTYPE test")) {
+				t.Fatalf("server error lost: %v", err)
+			}
+			if !errors.Is(c.Err(), resetErr) {
+				t.Fatalf("connection not retired: %v", c.Err())
+			}
+		})
+	}
+}
